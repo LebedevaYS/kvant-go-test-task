@@ -5,15 +5,28 @@ import (
 	"log"
 	"os"
 
+	"strings"
+
 	"github.com/gin-gonic/gin"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 
 	"go-test-task/internal/models"
+
+	"go-test-task/internal/config"
 	"strconv"
+
+	"github.com/dgrijalva/jwt-go"
+
+	"go-test-task/internal/auth"
+
+	"net/http"
+
+	"golang.org/x/crypto/bcrypt"
 )
 
 func main() {
+	config.Init()
 	// Подключение к БД
 	dsn := buildDSN()
 	log.Println("Connecting to DB with DSN:", dsn) // Добавьте лог для отладки
@@ -60,11 +73,14 @@ func getEnv(key, defaultValue string) string {
 }
 
 func setupRoutes(r *gin.Engine, db *gorm.DB) {
+	// Защищенные маршруты (для них нужен JWT)
+	protected := r.Group("/")
+	protected.Use(JWTAuthMiddleware())
 	r.GET("/health", func(c *gin.Context) {
 		c.JSON(200, gin.H{"status": "ok"})
 	})
 
-	r.POST("/users", func(c *gin.Context) {
+	protected.POST("/users", func(c *gin.Context) {
 		var input struct {
 			Name     string `json:"name" binding:"required"`
 			Email    string `json:"email" binding:"required,email"`
@@ -72,22 +88,42 @@ func setupRoutes(r *gin.Engine, db *gorm.DB) {
 			Password string `json:"password" binding:"required,min=8"`
 		}
 
+		// Логируем поступление запроса
+		log.Println("Received request to create user:", input.Email)
+
 		if err := c.ShouldBindJSON(&input); err != nil {
+			log.Printf("Error binding input: %v\n", err)
 			c.JSON(400, gin.H{"error": err.Error()})
 			return
 		}
 
+		// Хеширование пароля
+		hashedPassword, err := bcrypt.GenerateFromPassword([]byte(input.Password), bcrypt.DefaultCost)
+		if err != nil {
+			log.Printf("Error hashing password: %v\n", err)
+			c.JSON(500, gin.H{"error": "Failed to hash password"})
+			return
+		}
+
+		// Создаем пользователя
 		user := models.User{
 			Name:     input.Name,
 			Email:    input.Email,
 			Age:      input.Age,
-			Password: input.Password, // В реальном приложении нужно хешировать!
+			Password: string(hashedPassword),
 		}
 
+		// Логируем создание пользователя
+		log.Printf("Creating user with email: %s\n", input.Email)
+
 		if result := db.Create(&user); result.Error != nil {
+			log.Printf("Error creating user: %v\n", result.Error)
 			c.JSON(400, gin.H{"error": "User with this email already exists"})
 			return
 		}
+
+		// Логируем успешное создание пользователя
+		log.Printf("User created successfully: %s\n", user.Email)
 
 		c.JSON(201, gin.H{
 			"id":    user.ID,
@@ -97,7 +133,7 @@ func setupRoutes(r *gin.Engine, db *gorm.DB) {
 		})
 	})
 
-	r.GET("/users", func(c *gin.Context) {
+	protected.GET("/users", func(c *gin.Context) {
 		// Параметры запроса с значениями по умолчанию
 		page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 		limit, _ := strconv.Atoi(c.DefaultQuery("limit", "10"))
@@ -137,7 +173,7 @@ func setupRoutes(r *gin.Engine, db *gorm.DB) {
 		c.JSON(200, response)
 	})
 
-	r.GET("/users/:id", func(c *gin.Context) {
+	protected.GET("/users/:id", func(c *gin.Context) {
 		// Получаем ID из URL
 		id := c.Param("id")
 
@@ -159,7 +195,7 @@ func setupRoutes(r *gin.Engine, db *gorm.DB) {
 	})
 
 	// PUT для обновления пользователя
-	r.PUT("/users/:id", func(c *gin.Context) {
+	protected.PUT("/users/:id", func(c *gin.Context) {
 		// Получаем id пользователя из URL
 		id := c.Param("id")
 
@@ -203,7 +239,7 @@ func setupRoutes(r *gin.Engine, db *gorm.DB) {
 		})
 	})
 
-	r.DELETE("/users/:id", func(c *gin.Context) {
+	protected.DELETE("/users/:id", func(c *gin.Context) {
 		id := c.Param("id")
 
 		var user models.User
@@ -220,7 +256,7 @@ func setupRoutes(r *gin.Engine, db *gorm.DB) {
 		c.Status(204)
 	})
 
-	r.POST("/users/:user_id/orders", func(c *gin.Context) {
+	protected.POST("/users/:user_id/orders", func(c *gin.Context) {
 		var input struct {
 			Product  string  `json:"product" binding:"required"`
 			Quantity int     `json:"quantity" binding:"required,min=1"`
@@ -253,7 +289,7 @@ func setupRoutes(r *gin.Engine, db *gorm.DB) {
 		c.JSON(201, order)
 	})
 
-	r.GET("/users/:id/orders", func(c *gin.Context) {
+	protected.GET("/users/:id/orders", func(c *gin.Context) {
 		var user models.User
 		id := c.Param("id")
 
@@ -273,4 +309,83 @@ func setupRoutes(r *gin.Engine, db *gorm.DB) {
 		c.JSON(200, orders)
 	})
 
+	r.POST("/auth/login", func(c *gin.Context) {
+		var input struct {
+			Email    string `json:"email" binding:"required,email"`
+			Password string `json:"password" binding:"required"`
+		}
+
+		// Чтение JSON из запроса
+		if err := c.ShouldBindJSON(&input); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+
+		// Получаем пользователя из базы данных по email
+		var user models.User
+		if err := db.Where("email = ?", input.Email).First(&user).Error; err != nil {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials"})
+			return
+		}
+
+		// Сравнение пароля с хешированным в базе
+		if err := bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(input.Password)); err != nil {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials"})
+			return
+		}
+
+		// Генерация токена
+		token, err := auth.GenerateToken(user)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Could not generate token"})
+			return
+		}
+
+		// Возвращаем токен
+		c.JSON(http.StatusOK, gin.H{"token": token})
+	})
+
+}
+
+func JWTAuthMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		// Получаем токен из заголовка
+		authHeader := c.GetHeader("Authorization")
+		if authHeader == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Authorization header is required"})
+			c.Abort()
+			return
+		}
+
+		// Разделяем "Bearer" и сам токен
+		parts := strings.Split(authHeader, " ")
+		if len(parts) != 2 || parts[0] != "Bearer" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Authorization header format must be 'Bearer {token}'"})
+			c.Abort()
+			return
+		}
+
+		tokenString := parts[1]
+
+		// Верифицируем токен
+		token, err := auth.VerifyToken(tokenString)
+		if err != nil {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid token: " + err.Error()})
+			c.Abort()
+			return
+		}
+
+		if !token.Valid {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Token is invalid"})
+			c.Abort()
+			return
+		}
+
+		// Устанавливаем claims в контекст
+		if claims, ok := token.Claims.(jwt.MapClaims); ok {
+			c.Set("userID", claims["sub"])
+		}
+
+		c.Next()
+	}
 }
