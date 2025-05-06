@@ -140,6 +140,8 @@ func setupRoutes(r *gin.Engine, db *gorm.DB) {
 		minAge, _ := strconv.Atoi(c.Query("min_age"))
 		maxAge, _ := strconv.Atoi(c.Query("max_age"))
 
+		log.Printf("Запрос списка пользователей — page: %d, limit: %d, min_age: %d, max_age: %d", page, limit, minAge, maxAge)
+
 		// Рассчитываем offset
 		offset := (page - 1) * limit
 
@@ -160,7 +162,15 @@ func setupRoutes(r *gin.Engine, db *gorm.DB) {
 
 		// Получаем данные с пагинацией
 		var users []models.User
-		query.Offset(offset).Limit(limit).Find(&users)
+		result := query.Offset(offset).Limit(limit).Find(&users)
+
+		if result.Error != nil {
+			log.Printf("Ошибка при получении пользователей: %v", result.Error)
+			c.JSON(500, gin.H{"error": "Ошибка при получении пользователей"})
+			return
+		}
+
+		log.Printf("Найдено пользователей всего: %d, возвращено: %d", total, len(users))
 
 		// Формируем ответ
 		response := gin.H{
@@ -198,6 +208,7 @@ func setupRoutes(r *gin.Engine, db *gorm.DB) {
 	protected.PUT("/users/:id", func(c *gin.Context) {
 		// Получаем id пользователя из URL
 		id := c.Param("id")
+		log.Printf("Попытка обновления пользователя с ID: %s", id)
 
 		// Входные данные
 		var input struct {
@@ -208,6 +219,7 @@ func setupRoutes(r *gin.Engine, db *gorm.DB) {
 
 		// Привязываем тело запроса к структуре input
 		if err := c.ShouldBindJSON(&input); err != nil {
+			log.Printf("Ошибка валидации данных при обновлении пользователя ID %s: %v", id, err)
 			c.JSON(400, gin.H{"error": err.Error()})
 			return
 		}
@@ -215,6 +227,7 @@ func setupRoutes(r *gin.Engine, db *gorm.DB) {
 		// Ищем пользователя по ID
 		var user models.User
 		if err := db.First(&user, id).Error; err != nil {
+			log.Printf("Пользователь с ID %s не найден", id)
 			c.JSON(404, gin.H{"error": "User not found"})
 			return
 		}
@@ -226,9 +239,12 @@ func setupRoutes(r *gin.Engine, db *gorm.DB) {
 
 		// Сохраняем изменения в базе данных
 		if err := db.Save(&user).Error; err != nil {
+			log.Printf("Не удалось обновить пользователя с ID %s: %v", id, err)
 			c.JSON(500, gin.H{"error": "Failed to update user"})
 			return
 		}
+
+		log.Printf("Пользователь с ID %d успешно обновлен: имя=%s, email=%s, возраст=%d", user.ID, user.Name, user.Email, user.Age)
 
 		// Возвращаем обновленные данные пользователя
 		c.JSON(200, gin.H{
