@@ -36,12 +36,14 @@ func main() {
 		log.Fatalf("Failed to connect to database: %v", err)
 	}
 	// Автомиграции
-	if err := db.AutoMigrate(&models.User{}); err != nil {
+	if err := db.AutoMigrate(&models.User{}, &models.Order{}); err != nil {
 		log.Fatalf("Migration failed: %v", err)
 	}
-	if err := db.AutoMigrate(&models.Order{}); err != nil {
-		log.Fatalf("Order migration failed: %v", err)
-	}
+	db.Exec(`
+		ALTER TABLE orders 
+		ADD CONSTRAINT fk_orders_user 
+		FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE;
+	`)
 
 	r := gin.Default()
 
@@ -80,7 +82,7 @@ func setupRoutes(r *gin.Engine, db *gorm.DB) {
 		c.JSON(200, gin.H{"status": "ok"})
 	})
 
-	protected.POST("/users", func(c *gin.Context) {
+	r.POST("/users", func(c *gin.Context) {
 		var input struct {
 			Name     string `json:"name" binding:"required"`
 			Email    string `json:"email" binding:"required,email"`
