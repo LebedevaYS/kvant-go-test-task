@@ -26,6 +26,9 @@ func main() {
 	if err := db.AutoMigrate(&models.User{}); err != nil {
 		log.Fatalf("Migration failed: %v", err)
 	}
+	if err := db.AutoMigrate(&models.Order{}); err != nil {
+		log.Fatalf("Order migration failed: %v", err)
+	}
 
 	r := gin.Default()
 
@@ -215,6 +218,59 @@ func setupRoutes(r *gin.Engine, db *gorm.DB) {
 		}
 
 		c.Status(204)
+	})
+
+	r.POST("/users/:user_id/orders", func(c *gin.Context) {
+		var input struct {
+			Product  string  `json:"product" binding:"required"`
+			Quantity int     `json:"quantity" binding:"required,min=1"`
+			Price    float64 `json:"price" binding:"required"`
+		}
+
+		if err := c.ShouldBindJSON(&input); err != nil {
+			c.JSON(400, gin.H{"error": err.Error()})
+			return
+		}
+
+		var user models.User
+		if err := db.First(&user, c.Param("user_id")).Error; err != nil {
+			c.JSON(404, gin.H{"error": "User not found"})
+			return
+		}
+
+		order := models.Order{
+			UserID:   user.ID,
+			Product:  input.Product,
+			Quantity: input.Quantity,
+			Price:    input.Price,
+		}
+
+		if err := db.Create(&order).Error; err != nil {
+			c.JSON(500, gin.H{"error": "Failed to create order"})
+			return
+		}
+
+		c.JSON(201, order)
+	})
+
+	r.GET("/users/:id/orders", func(c *gin.Context) {
+		var user models.User
+		id := c.Param("id")
+
+		// Проверяем, существует ли пользователь
+		if err := db.First(&user, id).Error; err != nil {
+			c.JSON(404, gin.H{"error": "User not found"})
+			return
+		}
+
+		// Получаем заказы пользователя
+		var orders []models.Order
+		if err := db.Where("user_id = ?", id).Find(&orders).Error; err != nil {
+			c.JSON(500, gin.H{"error": "Failed to retrieve orders"})
+			return
+		}
+
+		c.JSON(200, orders)
 	})
 
 }
