@@ -155,4 +155,66 @@ func setupRoutes(r *gin.Engine, db *gorm.DB) {
 		})
 	})
 
+	// PUT для обновления пользователя
+	r.PUT("/users/:id", func(c *gin.Context) {
+		// Получаем id пользователя из URL
+		id := c.Param("id")
+
+		// Входные данные
+		var input struct {
+			Name  string `json:"name"`
+			Email string `json:"email"`
+			Age   int    `json:"age"`
+		}
+
+		// Привязываем тело запроса к структуре input
+		if err := c.ShouldBindJSON(&input); err != nil {
+			c.JSON(400, gin.H{"error": err.Error()})
+			return
+		}
+
+		// Ищем пользователя по ID
+		var user models.User
+		if err := db.First(&user, id).Error; err != nil {
+			c.JSON(404, gin.H{"error": "User not found"})
+			return
+		}
+
+		// Обновляем данные пользователя
+		user.Name = input.Name
+		user.Email = input.Email
+		user.Age = input.Age
+
+		// Сохраняем изменения в базе данных
+		if err := db.Save(&user).Error; err != nil {
+			c.JSON(500, gin.H{"error": "Failed to update user"})
+			return
+		}
+
+		// Возвращаем обновленные данные пользователя
+		c.JSON(200, gin.H{
+			"id":    user.ID,
+			"name":  user.Name,
+			"email": user.Email,
+			"age":   user.Age,
+		})
+	})
+
+	r.DELETE("/users/:id", func(c *gin.Context) {
+		id := c.Param("id")
+
+		var user models.User
+		if err := db.First(&user, id).Error; err != nil {
+			c.JSON(404, gin.H{"error": "User not found"})
+			return
+		}
+
+		if err := db.Unscoped().Delete(&user).Error; err != nil {
+			c.JSON(500, gin.H{"error": "Failed to delete user"})
+			return
+		}
+
+		c.Status(204)
+	})
+
 }
