@@ -1,16 +1,25 @@
 package config
 
 import (
-	"crypto/rand"
-	"log"
+	"os"
+
+	"github.com/joho/godotenv"
 )
 
-var SecretKey []byte
+var (
+	SecretKey []byte
+)
 
 func Init() {
-	key := make([]byte, 32) // 32 байта для HS256
-	if _, err := rand.Read(key); err != nil {
-		log.Fatal("Failed to generate secret key")
+	// Загрузка .env файла
+	if err := godotenv.Load(); err != nil {
+		panic("Error loading .env file")
 	}
-	SecretKey = key
+
+	// Инициализация секретного ключа для JWT
+	secret := os.Getenv("JWT_SECRET")
+	if secret == "" {
+		panic("JWT_SECRET is not set in .env file")
+	}
+	SecretKey = []byte(secret)
 }

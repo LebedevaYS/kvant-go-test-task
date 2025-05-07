@@ -6,11 +6,14 @@ import (
 	"go-test-task/internal/models"
 	"time"
 
-	"github.com/dgrijalva/jwt-go"
+	//"github.com/dgrijalva/jwt-go"
+	"github.com/golang-jwt/jwt/v5"
+	"golang.org/x/crypto/bcrypt"
 )
 
 var (
-	ErrInvalidToken = errors.New("invalid token")
+	ErrInvalidToken    = errors.New("invalid token")
+	ErrHashingPassword = errors.New("error hashing password")
 )
 
 func GenerateToken(user models.User) (string, error) {
@@ -25,7 +28,6 @@ func GenerateToken(user models.User) (string, error) {
 
 func VerifyToken(tokenString string) (*jwt.Token, error) {
 	token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
-		// Проверяем метод подписи
 		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
 			return nil, ErrInvalidToken
 		}
@@ -37,4 +39,16 @@ func VerifyToken(tokenString string) (*jwt.Token, error) {
 	}
 
 	return token, nil
+}
+
+func HashPassword(password string) (string, error) {
+	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		return "", ErrHashingPassword
+	}
+	return string(hashedPassword), nil
+}
+
+func ComparePassword(hashedPassword, password string) error {
+	return bcrypt.CompareHashAndPassword([]byte(hashedPassword), []byte(password))
 }
